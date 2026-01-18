@@ -24,6 +24,8 @@ class BeardTrackerYOLO:
         self.model = None
         self.alert_end_time = 0
         self.px_shoulder_width = 0 # Cache for shoulder width
+        self.flash_state = False # For flashing text
+        self.flash_job = None # To cancel flashing
         
         # Performance/Optimization State
         self.last_results = None
@@ -78,55 +80,102 @@ class BeardTrackerYOLO:
 
         # Alert Windows (One per monitor)
         self.alert_windows = []
+        self.alert_labels = [] # To reference text for flashing
+        self.vignette_images = [] # Keep references to prevent GC
         self.create_alert_windows()
 
         # Load Model
         self.load_model_thread()
+
+    def generate_vignette(self, width, height):
+        # Create a radial gradient from center
+        # Center = Black (0,0,0), Edge = Red (255,0,0)
+        
+        # Coordinates
+        Y = np.linspace(-1, 1, height)
+        X = np.linspace(-1, 1, width)
+        X, Y = np.meshgrid(X, Y)
+        
+        # Radius
+        R = np.sqrt(X**2 + Y**2)
+        
+        # Vignette mask: 0 at center, 1 at edges. 
+        # Use power to make the center "safe zone" larger and edges steeper
+        # R = 0 -> Mask = 0
+        # R > 0.5 -> Mask increases
+        Mask = np.clip(R, 0, 1) 
+        Mask = Mask ** 3 # Cube it to push the red to the edges
+        
+        # Create image (H, W, 3)
+        img = np.zeros((height, width, 3), dtype=np.uint8)
+        
+        # Red channel scales with Mask
+        img[:, :, 0] = (Mask * 255).astype(np.uint8)
+        # Green/Blue stay 0 (Black base)
+        
+        return Image.fromarray(img)
 
     def create_alert_windows(self):
         # Clean up existing if any
         for win in self.alert_windows:
             win.destroy()
         self.alert_windows = []
+        self.alert_labels = []
+        self.vignette_images = []
 
         try:
             monitors = get_monitors()
+            # If no monitors detected (e.g. RDP/VM sometimes), fall back
+            if not monitors: raise Exception("No monitors found")
+            
             for m in monitors:
-                win = tk.Toplevel(self.root)
-                win.withdraw()
-                # Geometry: widthxheight+x+y
-                win.geometry(f"{m.width}x{m.height}+{m.x}+{m.y}")
-                win.overrideredirect(True) # Remove interactions/title bar
-                win.attributes("-topmost", True)
-                win.configure(bg='red')
+                self._create_single_window(m.width, m.height, m.x, m.y)
                 
-                label = tk.Label(win, text="STOP PICKING", font=("Arial", 100, "bold"), fg="white", bg="red")
-                label.place(relx=0.5, rely=0.5, anchor="center")
-                
-                # FORCE QUIT BUTTON (Top Right)
-                quit_btn = tk.Button(win, text="FORCE QUIT", command=self.force_quit, font=("Arial", 16, "bold"), bg="white", fg="red")
-                quit_btn.place(relx=0.98, rely=0.03, anchor="ne")
-
-                # Bind escape to hide on all windows
-                win.bind("<Escape>", lambda e: self.hide_alert())
-                
-                self.alert_windows.append(win)
         except Exception as e:
-            print(f"Error checking monitors: {e}. Fallback to single window logic.")
-            win = tk.Toplevel(self.root)
-            win.withdraw()
-            win.attributes("-fullscreen", True)
-            win.attributes("-topmost", True)
-            win.configure(bg='red')
-            label = tk.Label(win, text="STOP PICKING", font=("Arial", 100, "bold"), fg="white", bg="red")
-            label.place(relx=0.5, rely=0.5, anchor="center")
-            
-            quit_btn = tk.Button(win, text="FORCE QUIT", command=self.force_quit, font=("Arial", 16, "bold"), bg="white", fg="red")
-            quit_btn.place(relx=0.98, rely=0.03, anchor="ne")
-            
-            win.bind("<Escape>", lambda e: self.hide_alert())
-            self.alert_windows.append(win)
-    
+            print(f"Error checking monitors: {e}. Fallback to fullscreen.")
+            self._create_single_window(self.root.winfo_screenwidth(), self.root.winfo_screenheight(), 0, 0)
+
+    def _create_single_window(self, w, h, x, y):
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.geometry(f"{w}x{h}+{x}+{y}")
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        
+        # Vignette & Transparency
+        # Black is the transparent key.
+        # Center of vignette is black -> Transparent window hole.
+        # Edges are Red -> Visible Red.
+        win.configure(bg='black')
+        try:
+             win.attributes("-transparentcolor", "black")
+             win.attributes("-alpha", 0.75) # Semi-transparent blend
+        except:
+            print("Transparency not supported on this platform/config")
+
+        # Generate Background
+        pil_img = self.generate_vignette(w, h)
+        tk_img = ImageTk.PhotoImage(pil_img)
+        self.vignette_images.append(tk_img) # Keep ref
+        
+        bg_label = tk.Label(win, image=tk_img, bg='black')
+        bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+
+        # Text Label
+        # Font increased to 150.
+        # fg="red" initially. 
+        # bg="black" matches transparent key.
+        label = tk.Label(win, text="STOP PICKING", font=("Arial", 150, "bold"), fg="red", bg="black")
+        label.place(relx=0.5, rely=0.5, anchor="center")
+        self.alert_labels.append(label)
+        
+        # FORCE QUIT BUTTON (Top Right)
+        quit_btn = tk.Button(win, text="FORCE QUIT", command=self.force_quit, font=("Arial", 12, "bold"), bg="white", fg="red")
+        quit_btn.place(relx=0.98, rely=0.03, anchor="ne")
+
+        win.bind("<Escape>", lambda e: self.hide_alert())
+        self.alert_windows.append(win)
+
     def force_quit(self):
         if self.cap:
             self.cap.release()
@@ -187,12 +236,40 @@ class BeardTrackerYOLO:
             for win in self.alert_windows:
                 win.deiconify()
                 win.attributes("-topmost", True) # Reinforce on top
+            
+            # Start flashing
+            self.flash_state = True
+            self.flash_alert_loop()
 
     def hide_alert(self):
         if self.is_alert_active:
             self.is_alert_active = False
             for win in self.alert_windows:
                 win.withdraw()
+            
+            # Stop flashing
+            if self.flash_job:
+                self.root.after_cancel(self.flash_job)
+                self.flash_job = None
+            # Reset color
+            for label in self.alert_labels:
+                label.config(fg="red")
+
+    def flash_alert_loop(self):
+        if not self.is_alert_active: return
+        
+        # Toggle Color
+        # Flashing Red <-> Black
+        # Black text on Black background = Invisible
+        # This creates a blinking effect.
+        new_color = "black" if self.flash_state else "red"
+        
+        for label in self.alert_labels:
+            label.config(fg=new_color)
+            
+        self.flash_state = not self.flash_state
+        # Schedule next flash (200ms)
+        self.flash_job = self.root.after(200, self.flash_alert_loop)
 
     def process_video(self):
         try:

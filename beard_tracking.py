@@ -19,6 +19,7 @@ class BeardTrackerYOLO:
         # State
         self.is_tracking = False
         self.is_alert_active = False
+        self.alert_count = 0
         self.cap = None
         self.model = None
         self.alert_end_time = 0
@@ -67,6 +68,9 @@ class BeardTrackerYOLO:
         
         self.status_label = tk.Label(root, text="Status: Idle (Model Loading...)", font=("Arial", 12))
         self.status_label.pack(pady=5)
+
+        self.count_label = tk.Label(root, text="Alerts: 0", font=("Arial", 12, "bold"), fg="blue")
+        self.count_label.pack(pady=2)
 
         # Video Label
         self.video_label = tk.Label(root)
@@ -142,6 +146,8 @@ class BeardTrackerYOLO:
     def start_tracking(self):
         if self.is_tracking or self.model is None: return
         self.is_tracking = True
+        self.alert_count = 0
+        self.count_label.config(text=f"Alerts: {self.alert_count}")
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         self.status_label.config(text="Status: Tracking...")
@@ -176,6 +182,8 @@ class BeardTrackerYOLO:
     def show_alert(self):
         if not self.is_alert_active:
             self.is_alert_active = True
+            self.alert_count += 1
+            self.count_label.config(text=f"Alerts: {self.alert_count}")
             for win in self.alert_windows:
                 win.deiconify()
                 win.attributes("-topmost", True) # Reinforce on top

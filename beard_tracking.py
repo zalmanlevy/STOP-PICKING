@@ -10,6 +10,8 @@ import sys
 import os
 from screeninfo import get_monitors
 
+import pygame # For audio alerts
+
 class BeardTrackerYOLO:
     def __init__(self, root):
         self.root = root
@@ -26,6 +28,19 @@ class BeardTrackerYOLO:
         self.px_shoulder_width = 0 # Cache for shoulder width
         self.flash_state = False # For flashing text
         self.flash_job = None # To cancel flashing
+        
+        # Audio Initialization
+        self.alert_sound = None
+        try:
+            pygame.mixer.init()
+            if os.path.exists("alert.mp3"):
+                self.alert_sound = pygame.mixer.Sound("alert.mp3")
+            elif os.path.exists("alert.wav"):
+                self.alert_sound = pygame.mixer.Sound("alert.wav")
+            else:
+                print("WARNING: alert.mp3/wav not found in current directory.")
+        except Exception as e:
+            print(f"Audio init failed: {e}")
         
         # Performance/Optimization State
         self.last_results = None
@@ -240,6 +255,9 @@ class BeardTrackerYOLO:
             # Start flashing
             self.flash_state = True
             self.flash_alert_loop()
+            
+            # TRIGGER AUDIO ALERT
+            Thread(target=self.play_alert_sound, daemon=True).start()
 
     def hide_alert(self):
         if self.is_alert_active:
@@ -270,6 +288,14 @@ class BeardTrackerYOLO:
         self.flash_state = not self.flash_state
         # Schedule next flash (200ms)
         self.flash_job = self.root.after(200, self.flash_alert_loop)
+
+    def play_alert_sound(self):
+        """Plays the alert sound in a separate thread."""
+        if self.alert_sound:
+            try:
+                self.alert_sound.play()
+            except Exception as e:
+                print(f"Error playing sound: {e}")
 
     def process_video(self):
         try:

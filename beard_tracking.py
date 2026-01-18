@@ -23,10 +23,16 @@ class BeardTrackerYOLO:
         self.model = None
         self.alert_end_time = 0
         self.px_shoulder_width = 0 # Cache for shoulder width
+        
+        # Performance/Optimization State
+        self.last_results = None
+        self.frame_count = 0
+        self.last_frame_time = 0
 
         # Settings
         self.sensitivity = tk.DoubleVar(value=0.5) # Default ration 0.5
         self.alert_duration = tk.DoubleVar(value=1.0) # Default duration 1.0s
+        self.frame_skip = tk.IntVar(value=3) # Process every Nth frame
 
         # UI Elements Container
         control_frame = tk.Frame(root)
@@ -54,6 +60,10 @@ class BeardTrackerYOLO:
         tk.Label(slider_frame, text="Alert Duration (Seconds)", font=("Arial", 12)).pack(pady=(10, 0))
         self.duration_slider = tk.Scale(slider_frame, from_=0.5, to=5.0, resolution=0.1, orient=tk.HORIZONTAL, variable=self.alert_duration, length=300)
         self.duration_slider.pack(fill=tk.X)
+        
+        tk.Label(slider_frame, text="Performance: Skip Frames (1 = Max CPU, 10 = Eco)", font=("Arial", 12)).pack(pady=(10, 0))
+        self.skip_slider = tk.Scale(slider_frame, from_=1, to=10, resolution=1, orient=tk.HORIZONTAL, variable=self.frame_skip, length=300)
+        self.skip_slider.pack(fill=tk.X)
         
         self.status_label = tk.Label(root, text="Status: Idle (Model Loading...)", font=("Arial", 12))
         self.status_label.pack(pady=5)
@@ -136,8 +146,19 @@ class BeardTrackerYOLO:
         self.stop_btn.config(state=tk.NORMAL)
         self.status_label.config(text="Status: Tracking...")
         
-        self.cap = cv2.VideoCapture(0)
-        self.process_video()
+        try:
+            self.cap = cv2.VideoCapture(0)
+            if not self.cap.isOpened():
+                raise Exception("Could not open video source")
+                
+            # Set Resolution to 640x480 for performance (Commented out for debugging)
+            # self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            # self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            
+            self.process_video()
+        except Exception as e:
+            print(f"Error starting tracking: {e}")
+            self.stop_tracking()
 
     def stop_tracking(self):
         self.is_tracking = False
@@ -166,112 +187,154 @@ class BeardTrackerYOLO:
                 win.withdraw()
 
     def process_video(self):
-        if not self.is_tracking or not self.cap:
-            return
+        try:
+            if not self.is_tracking or not self.cap:
+                return
 
-        ret, frame = self.cap.read()
-        if not ret:
-            self.stop_tracking()
-            return
+            ret, frame = self.cap.read()
+            if not ret:
+                print("Failed to read frame")
+                self.stop_tracking()
+                return
+                
+            # FPS Calculation
+            current_time = time.time()
+            fps = 1 / (current_time - self.last_frame_time) if self.last_frame_time > 0 else 0
+            self.last_frame_time = current_time
 
-        # Inference
-        results = self.model(frame, verbose=False)
-        annotated_frame = frame.copy()
-        
-        touching = False
-        
-        # Analyze Keypoints
-        if results[0].keypoints is not None and results[0].keypoints.data.shape[0] > 0:
-            kpts = results[0].keypoints.data[0].cpu().numpy() # First person
+            # Frame Skipping
+            self.frame_count += 1
+            try:
+                skip_rate = int(self.frame_skip.get())
+                if skip_rate < 1: skip_rate = 1
+            except:
+                skip_rate = 3
             
-            # Indices: 0:Nose, 5:L_Shoulder, 6:R_Shoulder, 9:L_Wrist, 10:R_Wrist
-            if kpts.shape[0] > 10:
-                nose = kpts[0][:2]
-                l_sh = kpts[5][:2]
-                r_sh = kpts[6][:2]
-                l_wrist = kpts[9][:2]
-                r_wrist = kpts[10][:2]
+            # Always display the frame, but only run inference if it's the right frame
+            # OR if we haven't run inference yet (results is None)
+            run_inference = (self.frame_count % skip_rate == 0)
+
+            annotated_frame = frame.copy()
+            
+            # If we run inference, update the stored results
+            if run_inference:
+                try:
+                    # OPTIMIZATION: imgsz=256 drastically reduces CPU usage compared to default 640
+                    self.last_results = self.model(frame, verbose=False, imgsz=256)
+                except Exception as e:
+                    print(f"Inference error: {e}")
+            
+            # If we have results (either fresh or stale), draw them
+            if self.last_results:
+                results = self.last_results
+                touching = False
                 
-                # Confidence check (Lowered to 0.3)
-                CONF_THRESH = 0.3
-                
-                # Update Shoulder Width if visible
-                if kpts[5][2] > CONF_THRESH and kpts[6][2] > CONF_THRESH:
-                    self.px_shoulder_width = np.linalg.norm(l_sh - r_sh)
+                # Analyze Keypoints
+                if results[0].keypoints is not None and results[0].keypoints.data.shape[0] > 0:
+                    kpts = results[0].keypoints.data[0].cpu().numpy() # First person
                     
-                if self.px_shoulder_width > 0:
-                    # Normalize wrist distances
-                    dist_l = np.linalg.norm(nose - l_wrist) / self.px_shoulder_width
-                    dist_r = np.linalg.norm(nose - r_wrist) / self.px_shoulder_width
-                    
-                    threshold = self.sensitivity.get()
-                    
-                    # Draw Meter Background
-                    h, w = frame.shape[:2]
-                    meter_w = 30
-                    meter_h = 200
-                    meter_x = w - 50
-                    meter_y = 50
-                    
-                    # Calculate closest hand ratio for the meter (inverted: 0 is dangerous)
-                    conf_l = kpts[9][2]
-                    conf_r = kpts[10][2]
-                    min_dist = min(dist_l if conf_l > CONF_THRESH else 999, dist_r if conf_r > CONF_THRESH else 999)
-                    
-                    # Visualization: Draw lines
-                    if conf_l > CONF_THRESH:
-                        color = (0, 255, 0) if dist_l > threshold else (0, 0, 255)
-                        cv2.line(annotated_frame, (int(nose[0]), int(nose[1])), (int(l_wrist[0]), int(l_wrist[1])), color, 2)
-                    
-                    if conf_r > CONF_THRESH:
-                        color = (0, 255, 0) if dist_r > threshold else (0, 0, 255)
-                        cv2.line(annotated_frame, (int(nose[0]), int(nose[1])), (int(r_wrist[0]), int(r_wrist[1])), color, 2)
+                    # Indices: 0:Nose, 5:L_Shoulder, 6:R_Shoulder, 9:L_Wrist, 10:R_Wrist
+                    if kpts.shape[0] > 10:
+                        nose = kpts[0][:2]
+                        l_sh = kpts[5][:2]
+                        r_sh = kpts[6][:2]
+                        l_wrist = kpts[9][:2]
+                        r_wrist = kpts[10][:2]
+                        
+                        # Confidence check (Lowered to 0.3)
+                        CONF_THRESH = 0.3
+                        
+                        # Update Shoulder Width if visible
+                        if kpts[5][2] > CONF_THRESH and kpts[6][2] > CONF_THRESH:
+                            self.px_shoulder_width = np.linalg.norm(l_sh - r_sh)
+                            
+                        if self.px_shoulder_width > 0:
+                            # Normalize wrist distances
+                            dist_l = np.linalg.norm(nose - l_wrist) / self.px_shoulder_width
+                            dist_r = np.linalg.norm(nose - r_wrist) / self.px_shoulder_width
+                            
+                            threshold = self.sensitivity.get()
+                            
+                            # Draw Meter Background
+                            h, w = frame.shape[:2]
+                            meter_w = 30
+                            meter_h = 200
+                            meter_x = w - 50
+                            meter_y = 50
+                            
+                            # Calculate closest hand ratio for the meter (inverted: 0 is dangerous)
+                            conf_l = kpts[9][2]
+                            conf_r = kpts[10][2]
+                            min_dist = min(dist_l if conf_l > CONF_THRESH else 999, dist_r if conf_r > CONF_THRESH else 999)
+                            
+                            # Visualization: Draw lines
+                            if conf_l > CONF_THRESH:
+                                color = (0, 255, 0) if dist_l > threshold else (0, 0, 255)
+                                cv2.line(annotated_frame, (int(nose[0]), int(nose[1])), (int(l_wrist[0]), int(l_wrist[1])), color, 2)
+                            
+                            if conf_r > CONF_THRESH:
+                                color = (0, 255, 0) if dist_r > threshold else (0, 0, 255)
+                                cv2.line(annotated_frame, (int(nose[0]), int(nose[1])), (int(r_wrist[0]), int(r_wrist[1])), color, 2)
 
-                    # Trigger
-                    if min_dist < threshold:
-                        touching = True
-                        self.alert_end_time = time.time() + self.alert_duration.get()
+                            # Trigger
+                            if min_dist < threshold:
+                                touching = True
+                                self.alert_end_time = time.time() + self.alert_duration.get()
 
-                    # Draw Visual Meter
-                    cv2.rectangle(annotated_frame, (meter_x, meter_y), (meter_x + meter_w, meter_y + meter_h), (200, 200, 200), -1)
-                    
-                    # Bar Height (Inverse: Closer = Higher Bar)
-                    display_val = max(0, min(1.0, (2.0 - min_dist) / 2.0))
-                    bar_h = int(display_val * meter_h)
-                    
-                    # Color gradient based on closeness
-                    bar_color = (0, 255, 0) # Green
-                    if min_dist < threshold * 1.5: bar_color = (0, 255, 255) # Yellow
-                    if min_dist < threshold: bar_color = (0, 0, 255) # Red
+                            # Draw Visual Meter
+                            # Draw Background (Grey)
+                            cv2.rectangle(annotated_frame, (meter_x, meter_y), (meter_x + meter_w, meter_y + meter_h), (200, 200, 200), -1)
+                            
+                            # Bar Height: Safety Meter (Full = Safe/Far, Empty = Danger/Close)
+                            # Max range assumed ~2.0 shoulder widths
+                            display_val = max(0, min(1.0, min_dist / 2.0))
+                            bar_h = int(display_val * meter_h)
+                            
+                            # Color gradient based on closeness
+                            bar_color = (0, 255, 0) # Green (Safe)
+                            if min_dist < threshold * 1.5: bar_color = (0, 255, 255) # Yellow
+                            if min_dist < threshold: bar_color = (0, 0, 255) # Red (Danger)
 
-                    cv2.rectangle(annotated_frame, (meter_x, meter_y + meter_h - bar_h), (meter_x + meter_w, meter_y + meter_h), bar_color, -1)
-                    cv2.rectangle(annotated_frame, (meter_x, meter_y), (meter_x + meter_w, meter_y + meter_h), (0, 0, 0), 2)
-                    cv2.putText(annotated_frame, f"{min_dist:.2f}", (meter_x - 10, meter_y + meter_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-                    
-                    # Draw threshold line on meter
-                    thresh_y = meter_y + meter_h - int(((2.0 - threshold) / 2.0) * meter_h)
-                    cv2.line(annotated_frame, (meter_x - 5, thresh_y), (meter_x + meter_w + 5, thresh_y), (0, 0, 255), 2)
-                    
-                    # Debug Info
-                    cv2.putText(annotated_frame, f"L Conf: {conf_l:.2f}", (10, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-                    cv2.putText(annotated_frame, f"R Conf: {conf_r:.2f}", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                            # Draw Fill
+                            cv2.rectangle(annotated_frame, (meter_x, meter_y + meter_h - bar_h), (meter_x + meter_w, meter_y + meter_h), bar_color, -1)
+                            # Draw Border
+                            cv2.rectangle(annotated_frame, (meter_x, meter_y), (meter_x + meter_w, meter_y + meter_h), (0, 0, 0), 2)
+                            
+                            cv2.putText(annotated_frame, f"{min_dist:.2f}", (meter_x - 10, meter_y + meter_h + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                            
+                            # Draw threshold line on meter
+                            # Convert threshold (distance) to y position
+                            # 0 distance = BOTTOM (y + h)
+                            # 2.0 distance = TOP (y)
+                            thresh_y = meter_y + meter_h - int((threshold / 2.0) * meter_h)
+                            cv2.line(annotated_frame, (meter_x - 5, thresh_y), (meter_x + meter_w + 5, thresh_y), (0, 0, 255), 2)
+                            
+                            # Debug Info
+                            cv2.putText(annotated_frame, f"L Conf: {conf_l:.2f}", (10, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                            cv2.putText(annotated_frame, f"R Conf: {conf_r:.2f}", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                        else:
+                            cv2.putText(annotated_frame, "Shoulders not detected!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+                if touching or time.time() < self.alert_end_time:
+                    self.show_alert()
                 else:
-                    cv2.putText(annotated_frame, "Shoulders not detected!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    self.hide_alert()
 
+            # Draw FPS
+            cv2.putText(annotated_frame, f"FPS: {fps:.1f}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Convert to Tkinter
-        image = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-        img_pil = Image.fromarray(image)
-        img_tk = ImageTk.PhotoImage(image=img_pil)
-        self.video_label.imgtk = img_tk
-        self.video_label.configure(image=img_tk)
+            # Convert to Tkinter
+            image = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            img_pil = Image.fromarray(image)
+            img_tk = ImageTk.PhotoImage(image=img_pil)
+            self.video_label.imgtk = img_tk
+            self.video_label.configure(image=img_tk)
 
-        if touching or time.time() < self.alert_end_time:
-            self.show_alert()
-        else:
-            self.hide_alert()
-
-        self.root.after(10, self.process_video)
+            self.root.after(10, self.process_video)
+        
+        except Exception as e:
+            print(f"CRITICAL ERROR in process_video: {e}")
+            self.stop_tracking()
 
 if __name__ == "__main__":
     root = tk.Tk()

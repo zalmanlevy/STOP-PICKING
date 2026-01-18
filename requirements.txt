@@ -1,0 +1,7 @@
+opencv-python
+numpy
+pillow
+ultralytics
+screeninfo
+pyttsx3
+pygame

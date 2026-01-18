@@ -26,6 +26,7 @@ class BeardTrackerYOLO:
 
         # Settings
         self.sensitivity = tk.DoubleVar(value=0.5) # Default ration 0.5
+        self.alert_duration = tk.DoubleVar(value=1.0) # Default duration 1.0s
 
         # UI Elements Container
         control_frame = tk.Frame(root)
@@ -49,6 +50,10 @@ class BeardTrackerYOLO:
         # Scale from 0.2 (Hard to trigger, close) to 2.0 (Easy to trigger, far)
         self.slider = tk.Scale(slider_frame, from_=0.2, to=2.0, resolution=0.05, orient=tk.HORIZONTAL, variable=self.sensitivity, length=300)
         self.slider.pack(fill=tk.X)
+        
+        tk.Label(slider_frame, text="Alert Duration (Seconds)", font=("Arial", 12)).pack(pady=(10, 0))
+        self.duration_slider = tk.Scale(slider_frame, from_=0.5, to=5.0, resolution=0.1, orient=tk.HORIZONTAL, variable=self.alert_duration, length=300)
+        self.duration_slider.pack(fill=tk.X)
         
         self.status_label = tk.Label(root, text="Status: Idle (Model Loading...)", font=("Arial", 12))
         self.status_label.pack(pady=5)
@@ -84,6 +89,10 @@ class BeardTrackerYOLO:
                 label = tk.Label(win, text="STOP PICKING", font=("Arial", 100, "bold"), fg="white", bg="red")
                 label.place(relx=0.5, rely=0.5, anchor="center")
                 
+                # FORCE QUIT BUTTON (Top Right)
+                quit_btn = tk.Button(win, text="FORCE QUIT", command=self.force_quit, font=("Arial", 16, "bold"), bg="white", fg="red")
+                quit_btn.place(relx=0.98, rely=0.03, anchor="ne")
+
                 # Bind escape to hide on all windows
                 win.bind("<Escape>", lambda e: self.hide_alert())
                 
@@ -97,8 +106,18 @@ class BeardTrackerYOLO:
             win.configure(bg='red')
             label = tk.Label(win, text="STOP PICKING", font=("Arial", 100, "bold"), fg="white", bg="red")
             label.place(relx=0.5, rely=0.5, anchor="center")
+            
+            quit_btn = tk.Button(win, text="FORCE QUIT", command=self.force_quit, font=("Arial", 16, "bold"), bg="white", fg="red")
+            quit_btn.place(relx=0.98, rely=0.03, anchor="ne")
+            
             win.bind("<Escape>", lambda e: self.hide_alert())
             self.alert_windows.append(win)
+    
+    def force_quit(self):
+        if self.cap:
+            self.cap.release()
+        self.root.destroy()
+        sys.exit(0)
 
     def load_model_thread(self):
         def _load():
@@ -162,7 +181,7 @@ class BeardTrackerYOLO:
         touching = False
         
         # Analyze Keypoints
-        if results[0].keypoints is not None and results[0].keypoints.data.shape[1] > 0:
+        if results[0].keypoints is not None and results[0].keypoints.data.shape[0] > 0:
             kpts = results[0].keypoints.data[0].cpu().numpy() # First person
             
             # Indices: 0:Nose, 5:L_Shoulder, 6:R_Shoulder, 9:L_Wrist, 10:R_Wrist
@@ -211,7 +230,7 @@ class BeardTrackerYOLO:
                     # Trigger
                     if min_dist < threshold:
                         touching = True
-                        self.alert_end_time = time.time() + 1.0
+                        self.alert_end_time = time.time() + self.alert_duration.get()
 
                     # Draw Visual Meter
                     cv2.rectangle(annotated_frame, (meter_x, meter_y), (meter_x + meter_w, meter_y + meter_h), (200, 200, 200), -1)

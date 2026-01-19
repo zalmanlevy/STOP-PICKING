@@ -62,9 +62,9 @@ class BeardTrackerYOLO:
         self.last_frame_time = 0
 
         # Settings
-        self.sensitivity = tk.DoubleVar(value=0.5) # Default ration 0.5
-        self.alert_duration = tk.DoubleVar(value=1.0) # Default duration 1.0s
-        self.frame_skip = tk.IntVar(value=3) # Process every Nth frame
+        self.sensitivity = tk.DoubleVar(value=1.5) # Default ration 1.5
+        self.alert_duration = tk.DoubleVar(value=0.5) # Default duration 0.5s
+        self.frame_skip = tk.IntVar(value=10) # Process every Nth frame
 
         # UI Elements Container
         control_frame = tk.Frame(root)
@@ -358,8 +358,8 @@ class BeardTrackerYOLO:
             # If we run inference, update the stored results
             if run_inference:
                 try:
-                    # OPTIMIZATION: Reverted to default resolution (640) for better accuracy
-                    self.last_results = self.model(frame, verbose=False) 
+                    # OPTIMIZATION: imgsz=320 is a good balance between CPU usage and accuracy
+                    self.last_results = self.model(frame, verbose=False, imgsz=320) 
                 except Exception as e:
                     print(f"Inference error: {e}")
             
@@ -469,7 +469,7 @@ class BeardTrackerYOLO:
             self.video_label.imgtk = img_tk
             self.video_label.configure(image=img_tk)
 
-            self.root.after(10, self.process_video)
+            self.root.after(33, self.process_video)
         
         except Exception as e:
             print(f"CRITICAL ERROR in process_video: {e}")

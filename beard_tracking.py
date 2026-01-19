@@ -254,11 +254,12 @@ class BeardTrackerYOLO:
         self.is_muted = not self.is_muted
         if self.is_muted:
             self.mute_btn.config(text="Unmute Audio", bg="orange")
+            if self.alert_sound: self.alert_sound.stop()
         else:
             self.mute_btn.config(text="Mute Audio", bg="gray")
-        # Also stop any currently playing sound if possible (pygame sound objects don't have stop() on the object itself easily without channel, but we can try)
-        if self.alert_sound and self.is_muted:
-            self.alert_sound.stop()
+            # If alert is currently active, restart sound
+            if self.is_alert_active and self.alert_sound:
+                self.alert_sound.play(loops=-1)
 
     def stop_tracking(self):
         self.is_tracking = False
@@ -287,7 +288,8 @@ class BeardTrackerYOLO:
             self.flash_alert_loop()
             
             # TRIGGER AUDIO ALERT
-            Thread(target=self.play_alert_sound, daemon=True).start()
+            if self.alert_sound and not self.is_muted:
+                self.alert_sound.play(loops=-1)
 
     def hide_alert(self):
         if self.is_alert_active:
@@ -302,6 +304,10 @@ class BeardTrackerYOLO:
             # Reset color
             for label in self.alert_labels:
                 label.config(fg="red")
+            
+            # Stop Audio
+            if self.alert_sound:
+                self.alert_sound.stop()
 
     def flash_alert_loop(self):
         if not self.is_alert_active: return
@@ -318,15 +324,6 @@ class BeardTrackerYOLO:
         self.flash_state = not self.flash_state
         # Schedule next flash (200ms)
         self.flash_job = self.root.after(200, self.flash_alert_loop)
-
-    def play_alert_sound(self):
-        """Plays the alert sound in a separate thread."""
-        if self.is_muted: return
-        if self.alert_sound:
-            try:
-                self.alert_sound.play()
-            except Exception as e:
-                print(f"Error playing sound: {e}")
 
     def process_video(self):
         try:
@@ -361,8 +358,8 @@ class BeardTrackerYOLO:
             # If we run inference, update the stored results
             if run_inference:
                 try:
-                    # OPTIMIZATION: imgsz=256 drastically reduces CPU usage compared to default 640
-                    self.last_results = self.model(frame, verbose=False, imgsz=256)
+                    # OPTIMIZATION: Reverted to default resolution (640) for better accuracy
+                    self.last_results = self.model(frame, verbose=False) 
                 except Exception as e:
                     print(f"Inference error: {e}")
             

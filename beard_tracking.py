@@ -12,6 +12,16 @@ from screeninfo import get_monitors
 
 import pygame # For audio alerts
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
 class BeardTrackerYOLO:
     def __init__(self, root):
         self.root = root
@@ -28,17 +38,21 @@ class BeardTrackerYOLO:
         self.px_shoulder_width = 0 # Cache for shoulder width
         self.flash_state = False # For flashing text
         self.flash_job = None # To cancel flashing
-        
+        self.is_muted = False # Mute state
+                
         # Audio Initialization
         self.alert_sound = None
         try:
             pygame.mixer.init()
-            if os.path.exists("alert.mp3"):
-                self.alert_sound = pygame.mixer.Sound("alert.mp3")
-            elif os.path.exists("alert.wav"):
-                self.alert_sound = pygame.mixer.Sound("alert.wav")
+            mp3_path = resource_path("alert.mp3")
+            wav_path = resource_path("alert.wav")
+            
+            if os.path.exists(mp3_path):
+                self.alert_sound = pygame.mixer.Sound(mp3_path)
+            elif os.path.exists(wav_path):
+                self.alert_sound = pygame.mixer.Sound(wav_path)
             else:
-                print("WARNING: alert.mp3/wav not found in current directory.")
+                print("WARNING: alert.mp3/wav not found.")
         except Exception as e:
             print(f"Audio init failed: {e}")
         
@@ -65,6 +79,9 @@ class BeardTrackerYOLO:
         
         self.stop_btn = tk.Button(btn_frame, text="Stop Tracking", command=self.stop_tracking, state=tk.DISABLED, font=("Arial", 14), bg="red", fg="white")
         self.stop_btn.pack(side=tk.LEFT, padx=5)
+
+        self.mute_btn = tk.Button(btn_frame, text="Mute Audio", command=self.toggle_mute, font=("Arial", 14), bg="gray", fg="white")
+        self.mute_btn.pack(side=tk.LEFT, padx=5)
 
         # Slider
         slider_frame = tk.Frame(control_frame)
@@ -200,7 +217,8 @@ class BeardTrackerYOLO:
     def load_model_thread(self):
         def _load():
             try:
-                self.model = YOLO('yolov8n-pose.pt') 
+                model_path = resource_path('yolov8n-pose.pt')
+                self.model = YOLO(model_path) 
                 self.root.after(0, lambda: self.status_label.config(text="Status: Ready"))
             except Exception as e:
                 self.root.after(0, lambda: self.status_label.config(text=f"Error loading model: {e}"))
@@ -229,6 +247,18 @@ class BeardTrackerYOLO:
         except Exception as e:
             print(f"Error starting tracking: {e}")
             self.stop_tracking()
+
+
+
+    def toggle_mute(self):
+        self.is_muted = not self.is_muted
+        if self.is_muted:
+            self.mute_btn.config(text="Unmute Audio", bg="orange")
+        else:
+            self.mute_btn.config(text="Mute Audio", bg="gray")
+        # Also stop any currently playing sound if possible (pygame sound objects don't have stop() on the object itself easily without channel, but we can try)
+        if self.alert_sound and self.is_muted:
+            self.alert_sound.stop()
 
     def stop_tracking(self):
         self.is_tracking = False
@@ -291,6 +321,7 @@ class BeardTrackerYOLO:
 
     def play_alert_sound(self):
         """Plays the alert sound in a separate thread."""
+        if self.is_muted: return
         if self.alert_sound:
             try:
                 self.alert_sound.play()

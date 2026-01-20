@@ -39,8 +39,10 @@ class BeardTrackerYOLO:
         self.flash_state = False # For flashing text
         self.flash_job = None # To cancel flashing
         self.is_muted = False # Mute state
-                
+        self.audio_start_job = None # To schedule audio start
+        
         # Audio Initialization
+
         self.alert_sound = None
         try:
             pygame.mixer.init()
@@ -63,8 +65,11 @@ class BeardTrackerYOLO:
 
         # Settings
         self.sensitivity = tk.DoubleVar(value=1.5) # Default ration 1.5
-        self.alert_duration = tk.DoubleVar(value=0.5) # Default duration 0.5s
+        self.alert_duration = tk.DoubleVar(value=0.1) # Default duration 0.1s
+        self.audio_delay = tk.DoubleVar(value=0.9) # Default delay 0.9s
+
         self.frame_skip = tk.IntVar(value=10) # Process every Nth frame
+
 
         # UI Elements Container
         control_frame = tk.Frame(root)
@@ -93,12 +98,18 @@ class BeardTrackerYOLO:
         self.slider.pack(fill=tk.X)
         
         tk.Label(slider_frame, text="Alert Duration (Seconds)", font=("Arial", 12)).pack(pady=(10, 0))
-        self.duration_slider = tk.Scale(slider_frame, from_=0.5, to=5.0, resolution=0.1, orient=tk.HORIZONTAL, variable=self.alert_duration, length=300)
+        self.duration_slider = tk.Scale(slider_frame, from_=0.1, to=5.0, resolution=0.1, orient=tk.HORIZONTAL, variable=self.alert_duration, length=300)
         self.duration_slider.pack(fill=tk.X)
         
         tk.Label(slider_frame, text="Performance: Skip Frames (1 = Max CPU, 10 = Eco)", font=("Arial", 12)).pack(pady=(10, 0))
         self.skip_slider = tk.Scale(slider_frame, from_=1, to=10, resolution=1, orient=tk.HORIZONTAL, variable=self.frame_skip, length=300)
         self.skip_slider.pack(fill=tk.X)
+
+        tk.Label(slider_frame, text="Audio Start Delay (Seconds)", font=("Arial", 12)).pack(pady=(10, 0))
+        self.delay_slider = tk.Scale(slider_frame, from_=0.0, to=5.0, resolution=0.1, orient=tk.HORIZONTAL, variable=self.audio_delay, length=300)
+        self.delay_slider.pack(fill=tk.X)
+
+
         
         self.status_label = tk.Label(root, text="Status: Idle (Model Loading...)", font=("Arial", 12))
         self.status_label.pack(pady=5)
@@ -112,7 +123,8 @@ class BeardTrackerYOLO:
 
         # Alert Windows (One per monitor)
         self.alert_windows = []
-        self.alert_labels = [] # To reference text for flashing
+        self.alert_labels = [] # To reference text for flashing (Now stores canvas, item_id tuples)
+
         self.vignette_images = [] # Keep references to prevent GC
         self.create_alert_windows()
 
@@ -136,9 +148,10 @@ class BeardTrackerYOLO:
         # R = 0 -> Mask = 0
         # R > 0.5 -> Mask increases
         Mask = np.clip(R, 0, 1) 
-        Mask = Mask ** 3 # Cube it to push the red to the edges
+        Mask = Mask ** 2 # Lowered from 3 for softer transition
         
         # Create image (H, W, 3)
+
         img = np.zeros((height, width, 3), dtype=np.uint8)
         
         # Red channel scales with Mask
@@ -175,33 +188,62 @@ class BeardTrackerYOLO:
         win.attributes("-topmost", True)
         
         # Vignette & Transparency
-        # Black is the transparent key.
-        # Center of vignette is black -> Transparent window hole.
-        # Edges are Red -> Visible Red.
         win.configure(bg='black')
         try:
-             win.attributes("-transparentcolor", "black")
+             # REMOVED: win.attributes("-transparentcolor", "black") - Causes holes in the window
              win.attributes("-alpha", 0.75) # Semi-transparent blend
         except:
+
             print("Transparency not supported on this platform/config")
+
+        # Create Canvas for transparent text rendering
+        # bg='black' ensures the background maps to the transparent key
+        canvas = tk.Canvas(win, bg='black', highlightthickness=0)
+        canvas.pack(fill='both', expand=True)
 
         # Generate Background
         pil_img = self.generate_vignette(w, h)
         tk_img = ImageTk.PhotoImage(pil_img)
         self.vignette_images.append(tk_img) # Keep ref
         
-        bg_label = tk.Label(win, image=tk_img, bg='black')
-        bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+        # Draw Vignette Image
+        canvas.create_image(0, 0, image=tk_img, anchor="nw")
 
-        # Text Label
-        # Font increased to 150.
-        # fg="red" initially. 
-        # bg="black" matches transparent key.
-        label = tk.Label(win, text="STOP PICKING", font=("Arial", 150, "bold"), fg="red", bg="black")
-        label.place(relx=0.5, rely=0.5, anchor="center")
-        self.alert_labels.append(label)
+        # Text Setup
+        cx, cy = w / 2, h / 2
+        text_content = "STOP PICKING"
+        font_spec = ("Arial", 150, "bold")
+        
+        # Outline (Thick Black)
+        # We use #020202 to ensure it is NOT treated as transparent (if black is key)
+        outline_color = "#020202"
+        offsets = [
+            (-3, -3), (-3, 0), (-3, 3),
+            (0, -3),           (0, 3),
+            (3, -3),  (3, 0),  (3, 3)
+        ]
+        
+        for ox, oy in offsets:
+            canvas.create_text(
+                cx + ox, cy + oy,
+                text=text_content,
+                font=font_spec,
+                fill=outline_color,
+                anchor="center"
+            )
+
+        # Main Text (Target for flashing)
+        label_id = canvas.create_text(
+            cx, cy,
+            text=text_content,
+            font=font_spec,
+            fill="red",
+            anchor="center"
+        )
+        self.alert_labels.append((canvas, label_id))
         
         # FORCE QUIT BUTTON (Top Right)
+        # Placed on top of canvas using win.place (Button is child of win, so it floats)
         quit_btn = tk.Button(win, text="FORCE QUIT", command=self.force_quit, font=("Arial", 12, "bold"), bg="white", fg="red")
         quit_btn.place(relx=0.98, rely=0.03, anchor="ne")
 
@@ -287,9 +329,16 @@ class BeardTrackerYOLO:
             self.flash_state = True
             self.flash_alert_loop()
             
-            # TRIGGER AUDIO ALERT
-            if self.alert_sound and not self.is_muted:
-                self.alert_sound.play(loops=-1)
+            # TRIGGER AUDIO ALERT (With Delay)
+            delay_ms = int(self.audio_delay.get() * 1000)
+            if delay_ms <= 0:
+                self._play_audio_now()
+            else:
+                self.audio_start_job = self.root.after(delay_ms, self._play_audio_now)
+
+    def _play_audio_now(self):
+        if self.is_alert_active and self.alert_sound and not self.is_muted:
+            self.alert_sound.play(loops=-1)
 
     def hide_alert(self):
         if self.is_alert_active:
@@ -302,12 +351,18 @@ class BeardTrackerYOLO:
                 self.root.after_cancel(self.flash_job)
                 self.flash_job = None
             # Reset color
-            for label in self.alert_labels:
-                label.config(fg="red")
+            for canvas, label_id in self.alert_labels:
+                canvas.itemconfigure(label_id, fill="red")
             
+            # Cancel pending audio start if it hasn't happened yet
+            if self.audio_start_job:
+                self.root.after_cancel(self.audio_start_job)
+                self.audio_start_job = None
+
             # Stop Audio
             if self.alert_sound:
                 self.alert_sound.stop()
+
 
     def flash_alert_loop(self):
         if not self.is_alert_active: return
@@ -318,8 +373,9 @@ class BeardTrackerYOLO:
         # This creates a blinking effect.
         new_color = "black" if self.flash_state else "red"
         
-        for label in self.alert_labels:
-            label.config(fg=new_color)
+        for canvas, label_id in self.alert_labels:
+            canvas.itemconfigure(label_id, fill=new_color)
+
             
         self.flash_state = not self.flash_state
         # Schedule next flash (200ms)

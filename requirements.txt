@@ -1,7 +1,7 @@
 opencv-python
 numpy
 pillow
-ultralytics
+mediapipe
 screeninfo
 pyttsx3
 pygame

@@ -10,6 +10,7 @@ Feel free to use it, but please keep in mind this is a personal project—it is 
 ## 🔒 Privacy & Security
 **This app runs 100% locally on your computer.**
 It does **not** send your video feed or data to the internet.
+On first setup, it may download the official MediaPipe hand and face detector model files into the local `models` folder. After that, detection runs locally.
 
 * **Proof:** You can literally turn off your Wi-Fi/Internet connection, and the app will still work perfectly.
 
@@ -48,9 +49,17 @@ If you know what you are doing, you can run the source code directly through you
 
 ## ⚙️ Settings Explained
 Once the app is running, you will see a few controls:
-* **Sensitivity:** The higher this is, the more often the alarm will run (it becomes more sensitive to you touching your face).
+* **Sensitivity:** Expands or shrinks the face-contact zone. Higher values catch more near-face touches.
 * **Alert Duration:** This controls how many seconds the blaring alarm and red screen stay on for.
-* **Performance Slider:** The higher you set this number, the **less** CPU/computer power the app uses (slide this up if your computer is lagging).
+* **Performance Slider:** The higher you set this number, the less often the app analyzes a frame, which lowers CPU usage. The app temporarily returns to full analysis speed when a hand gets near your face.
+* **Hand Confidence Filter:** Optional. Leave it at `0` unless you need to ignore unstable hand detections.
+* **Drink Object Detector:** Runs intermittently near your mouth/hand. Looks for lightweight COCO drink-like objects such as bottles and cups overlapping the active hand. It only suppresses mouth-area contact; beard/chin contact still alerts.
+* **Drink Memory:** Keeps a recently detected drink active very briefly so one missed frame does not immediately alert mid-sip.
+* **Seltzer Can Sip Guard:** Lightweight hand-landmark fallback for cans that the object detector misses. It draws a `can/cup grip` marker near the mouth and only suppresses mouth-area contact when the wrist, palm, and finger landmarks look like a drinking grip.
+* **Sip Guard Memory:** Keeps the seltzer-can sip guard active very briefly between frames.
+* **Capture Resolution:** Lower resolutions use less CPU. The default is 480x360.
+
+The app tracks the primary face by favoring the largest, closest, and most stable face in view. It scores contact against the full face outline, mouth area, lower face, fingertips, finger edges, and palm overlap instead of relying only on wrist distance.
 
 ## 🛑 How to Stop It
 * **If the alarm IS blaring:** Click **"Force Quit"** in the top right corner.

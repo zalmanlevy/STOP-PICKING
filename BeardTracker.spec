@@ -1,10 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
+from pathlib import Path
 
-datas = [('yolov8n-pose.pt', '.'), ('alert.mp3', '.')]
+datas = [('alert.mp3', '.')]
+for model_path in Path('models').glob('*.task'):
+    datas.append((str(model_path), 'models'))
+for model_path in Path('models').glob('*.tflite'):
+    datas.append((str(model_path), 'models'))
 binaries = []
 hiddenimports = ['numpy._core._exceptions']
 tmp_ret = collect_all('numpy')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('mediapipe')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 

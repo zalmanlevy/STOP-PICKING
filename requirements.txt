@@ -1,0 +1,7 @@
+opencv-python
+numpy
+pillow
+mediapipe
+screeninfo
+pyttsx3
+pygame

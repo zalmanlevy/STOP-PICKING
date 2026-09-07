@@ -1,0 +1,6 @@
+# PyInstaller output - regenerate with: pyinstaller BeardTracker.spec
+# See BUILD-ARTIFACTS.md
+dist/
+build/
+__pycache__/
+*.pyc
